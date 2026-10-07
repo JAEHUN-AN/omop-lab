@@ -14,7 +14,7 @@ OMOP CDM 5.4를 손으로 익히고, 그 위에서 **한국 진단코드(KCD) �
 | 0 | Synthea 합성 환자 → CDM 핵심 테이블 ETL (person, visit_occurrence, observation_period, condition_occurrence, observation) | ✅ 어휘 없이 적재 확인 |
 | 0.5 | Athena 어휘 적재 → 진단 매핑률 측정 (SNOMED, ICD-10 → 표준 개념) | ✅ 99.3% (아래 측정 기록) |
 | 0.9 | DataQualityDashboard로 품질 점검, 공식 ETL-Synthea(R) 결과와 비교 | |
-| 1 | KCD 코드 목록 → KCD7 → 표준 개념 매핑률 측정 도구 | |
+| 1 | 코드 목록(KCD 진단·EDI 행위/검사/약제) → 국내 어휘 → 표준 개념 연결률 측정 (`measure`) | ✅ 도구 완성, 실제 목록 측정 전 |
 
 ## 데이터 경계 (중요)
 
@@ -44,6 +44,34 @@ uv run omoplab load-vocab       # vocab/ 의 Athena CSV를 한 트랜잭션으�
 uv run omoplab etl              # Synthea → CDM
 uv run omoplab status           # 행 수, 진단 매핑률
 ```
+
+### 코드 목록 측정 (1단계)
+
+```bash
+uv run omoplab measure private/codes.csv --out private/result.csv
+```
+
+입력 CSV — **실제 기관 데이터는 반드시 `private/`(gitignore) 아래에 둔다.** 리포 안의 다른 위치면 경고한다.
+
+| 열 | 필수 | 설명 |
+|---|---|---|
+| `code` | ✅ | 원내 코드. `E119`·`e11.9`처럼 점·대소문자가 달라도 맞춰 읽는다 |
+| `system` | | `KCD` 또는 `EDI`. 없으면 `--system`으로 준다 |
+| `group` | | 병원 등 비교 단위 |
+| `count` | | 환자수·건수. 있으면 **사용량 가중 연결률**을 함께 낸다 |
+| `name` | | 코드명. 결과 CSV로 옮겨진다 |
+
+UTF-8(BOM 포함)과 CP949(엑셀 기본 저장) 모두 읽는다.
+
+판정 순서: **정확 일치 → 상위 코드 일치**(원내 확장 자릿수를 한 자리씩 떼어 냄. KCD는 3자리 분류까지, EDI는 5자리까지) **→ 미발견**.
+"표준연결"은 찾은 국내 코드에 유효한 표준 개념 'Maps to'가 있는 경우다.
+
+```
+group         체계     코드 형식오류   정확   상위  미발견 표준연결   연결%   가중%  도메인
+데모A         EDI      1893     1218    589   1222      82     1636    86.4    86.9  Procedure 1187, Drug 286, ...
+데모A         KCD       107        3     94     12       1       91    85.0    82.8  Condition 76, Observation 14, ...
+```
+(위 예시는 공개 어휘에서 고른 코드에 표기 변형을 섞어 만든 데모 입력이다.)
 
 ### Athena 어휘 받기
 

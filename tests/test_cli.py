@@ -49,6 +49,39 @@ def test_etl_then_status_reports_counts(cli_schema, tmp_path, capsys):
     assert "person" in out and "매핑률" in out
 
 
+def test_measure_prints_summary_and_writes_per_code_csv(cli_schema, tmp_path, capsys):
+    main(["init-db"])
+    with psycopg.connect(**{k: v for k, v in load_settings().items() if k != "schema"}) as conn:
+        conn.execute(
+            f"INSERT INTO {SCHEMA}.concept VALUES "
+            "(201826,'Type 2 DM','Condition','SNOMED','Clinical Finding','S','44054006','1970-01-01','2099-12-31',NULL),"
+            "(1572001,'E11.9','Condition','KCD7','KCD7 code',NULL,'E11.9','1970-01-01','2099-12-31',NULL),"
+            "(1599000,'MERS','Condition','KCD7','KCD7 code',NULL,'U19','1970-01-01','2099-12-31',NULL)"
+        )
+        conn.execute(
+            f"INSERT INTO {SCHEMA}.concept_relationship VALUES "
+            "(1572001,201826,'Maps to','1970-01-01','2099-12-31',NULL)"
+        )
+    codes = tmp_path / "codes.csv"
+    codes.write_text("group,code,count\nH1,E119,90\nH1,U19,10\nH2,E1199,3\n", encoding="utf-8")
+    out = tmp_path / "result.csv"
+    capsys.readouterr()
+
+    main(["measure", str(codes), "--system", "KCD", "--out", str(out)])
+
+    printed = capsys.readouterr().out
+    assert "H1" in printed and "H2" in printed and "U19" in printed
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
+    assert lines[0].startswith("group,system,raw_code") and len(lines) == 4
+
+
+def test_measure_reports_missing_file_without_traceback(cli_schema, tmp_path):
+    main(["init-db"])
+
+    with pytest.raises(SystemExit, match="측정 실패"):
+        main(["measure", str(tmp_path / "nope.csv"), "--system", "KCD"])
+
+
 def test_load_settings_rejects_reserved_schema(monkeypatch):
     monkeypatch.setenv("CDM_SCHEMA", "public")
 

@@ -41,6 +41,9 @@ TYPE_PERIOD = 32882  # 관찰기간
 SYSTEM_VOCABULARIES = {
     "SNOMED-CT": ("SNOMED",),
     "ICD10": ("ICD10CM",),
+    # 국내 코드 측정용 (measure)
+    "KCD": ("KCD7",),
+    "EDI": ("EDI",),
 }
 DEFAULT_SYSTEM = "SNOMED-CT"
 
