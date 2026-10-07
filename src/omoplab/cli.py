@@ -4,6 +4,7 @@ from pathlib import Path
 
 import psycopg
 
+from omoplab.compare import event_overlap, format_comparison, table_counts
 from omoplab.config import ROOT, load_settings
 from omoplab.ddl import apply_ddl, schema_exists, validate_schema
 from omoplab.etl.load import run_etl
@@ -57,6 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
     etl = sub.add_parser("etl", help="Synthea CSV를 CDM 임상 테이블로 변환·적재한다")
     etl.add_argument("csv_dir", type=Path, nargs="?", default=ROOT / "data" / "synthea" / "csv")
     sub.add_parser("status", help="테이블 행 수와 진단 매핑률을 보여 준다")
+    cmp = sub.add_parser("compare", help="다른 CDM 스키마(예: 공식 ETL 결과 cdm_official)와 행 수·레코드를 대조한다")
+    cmp.add_argument("other_schema")
     m = sub.add_parser("measure", help="코드 목록 CSV(KCD·EDI)의 표준 개념 연결률을 잰다")
     m.add_argument("csv_path", type=Path)
     m.add_argument("--system", choices=SYSTEMS, help="CSV에 system 열이 없을 때 쓸 코드 체계")
@@ -115,6 +118,9 @@ def main(argv: list[str] | None = None) -> None:
             load_vocab(conn, args.vocab_dir, schema, extra_dirs=args.add)
         elif args.command == "etl":
             run_etl(conn, args.csv_dir, schema)
+        elif args.command == "compare":
+            other = validate_schema(args.other_schema)
+            print(format_comparison(schema, other, table_counts(conn, schema, other), event_overlap(conn, schema, other)))
         elif args.command == "measure":
             _run_measure(conn, schema, args)
         elif args.command == "status":

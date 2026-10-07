@@ -100,6 +100,23 @@ def test_measure_reports_missing_file_without_traceback(cli_schema, tmp_path):
         main(["measure", str(tmp_path / "nope.csv"), "--system", "KCD"])
 
 
+def test_compare_schema_with_itself_matches_fully(cli_schema, tmp_path, capsys):
+    (tmp_path / "patients.csv").write_text(
+        "Id,BIRTHDATE,DEATHDATE,GENDER,RACE,ETHNICITY\np-a,1980-05-17,2020-02-01,F,asian,hispanic\n", encoding="utf-8")
+    (tmp_path / "encounters.csv").write_text(
+        "Id,START,STOP,PATIENT,ENCOUNTERCLASS,CODE,REASONCODE\ne1,2020-01-01T09:00:00Z,,p-a,emergency,1,\n",
+        encoding="utf-8")
+    (tmp_path / "conditions.csv").write_text("START,STOP,PATIENT,ENCOUNTER,CODE\n2020-01-01,,p-a,e1,123\n", encoding="utf-8")
+    main(["init-db"])
+    main(["etl", str(tmp_path)])
+    capsys.readouterr()
+
+    main(["compare", SCHEMA])
+
+    out = capsys.readouterr().out
+    assert "condition_occurrence" in out and "100.0" in out
+
+
 def test_load_settings_rejects_reserved_schema(monkeypatch):
     monkeypatch.setenv("CDM_SCHEMA", "public")
 

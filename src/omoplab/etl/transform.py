@@ -8,10 +8,12 @@ from datetime import date, datetime
 from typing import NamedTuple
 
 from omoplab.etl.concepts import (
+    DEATH_CERTIFICATION,
     DEFAULT_SYSTEM,
     ETHNICITY,
     GENDER,
     RACE,
+    TYPE_EHR,
     TYPE_EHR_ENCOUNTER,
     TYPE_PERIOD,
     UNMAPPED,
@@ -76,6 +78,15 @@ class Observation(NamedTuple):
     visit_occurrence_id: int | None
     observation_source_value: str
     observation_source_concept_id: int
+
+
+class Death(NamedTuple):
+    person_id: int
+    death_date: date
+    death_type_concept_id: int
+    cause_concept_id: int | None
+    cause_source_value: str | None
+    cause_source_concept_id: int | None
 
 
 class ConditionSplit(NamedTuple):
@@ -216,3 +227,45 @@ def to_conditions(
         else:
             skipped += 1
     return ConditionSplit(conditions, observations, skipped)
+
+
+def death_cause_keys(encounters: Iterable[Mapping[str, str]]) -> set[tuple[str, str]]:
+    """사인 조회에 필요한 (SYSTEM, 코드) — 사망진단 방문의 REASONCODE."""
+    return {("SNOMED-CT", e["REASONCODE"]) for e in encounters if e.get("CODE") == DEATH_CERTIFICATION and e.get("REASONCODE")}
+
+
+def to_deaths(
+    patients: Iterable[Mapping[str, str]],
+    person_ids: Mapping[str, int],
+    encounters: Iterable[Mapping[str, str]],
+    lookup: ConceptLookup,
+) -> list[Death]:
+    """사망일은 patients.DEATHDATE, 사인은 사망진단 방문(308646001)의 REASONCODE에서 가져온다.
+
+    ETL-Synthea는 사인이 표준 개념으로 매핑된 사망진단 방문만 남긴다. 여기서는 사망자를 버리지 않고,
+    사인을 찾지 못하면 비워 둔다 (의도한 차이 — README 설계 결정 참고).
+    """
+    causes: dict[str, str] = {}
+    for e in encounters:
+        if e.get("CODE") == DEATH_CERTIFICATION and e.get("REASONCODE"):
+            causes.setdefault(e["PATIENT"], e["REASONCODE"])
+    deaths = []
+    for p in sorted(patients, key=lambda p: person_ids.get(p["Id"], 0)):
+        person_id = person_ids.get(p["Id"])
+        if person_id is None or not p.get("DEATHDATE"):
+            continue
+        code = causes.get(p["Id"])
+        match = lookup.get(("SNOMED-CT", code), UNMAPPED) if code else UNMAPPED
+        # 사인 코드가 Condition 표준 개념이 아니면 원천 값만 남기고 개념은 0(미매핑)
+        standard = match.standard_concept_id if match.domain_id == "Condition" else 0
+        deaths.append(
+            Death(
+                person_id=person_id,
+                death_date=date.fromisoformat(p["DEATHDATE"]),
+                death_type_concept_id=TYPE_EHR,
+                cause_concept_id=standard if code else None,
+                cause_source_value=code,
+                cause_source_concept_id=match.source_concept_id if code else None,
+            )
+        )
+    return deaths

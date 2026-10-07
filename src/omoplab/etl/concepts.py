@@ -30,11 +30,20 @@ VISIT = {
     "emergency": VISIT_EMERGENCY,
     "urgentcare": VISIT_EMERGENCY,
     "inpatient": VISIT_INPATIENT,
+    # ETL-Synthea는 아래 넷을 방문으로 만들지 않는다. DQD가 방문 개념 0을 실패로 잡아서 표준 Visit 개념으로 매핑한다.
+    "home": 581476,  # Home Visit
+    "hospice": 8546,  # Hospice (CMS Place of Service)
+    "snf": 8863,  # Skilled Nursing Facility (CMS Place of Service)
+    "virtual": 722455,  # Telehealth
 }
 
 # Type Concept — 레코드의 출처. ETL-Synthea와 같은 값
 TYPE_EHR_ENCOUNTER = 32827  # 방문·진단·관찰: "EHR encounter record"
 TYPE_PERIOD = 32882  # 관찰기간
+TYPE_EHR = 32817  # 사망: "EHR"
+
+# Synthea에서 사망진단 방문을 나타내는 SNOMED 코드 (REASONCODE가 사인)
+DEATH_CERTIFICATION = "308646001"
 
 # Synthea SYSTEM 값 → 찾아볼 Athena vocabulary_id 후보 (앞에서부터 우선).
 # Synthea 3.x의 ICD10은 ICD-10-CM이다. WHO ICD10으로 폴백하면 같은 문자열의 다른 개념에 붙을 수 있어서 하지 않는다.

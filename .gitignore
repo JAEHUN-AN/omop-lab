@@ -16,3 +16,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# R 패키지·JDBC 드라이버 (r/install.R로 재설치)
+.rlib/
+tools/jdbc/

@@ -1,6 +1,8 @@
 from datetime import date, datetime
 
 from omoplab.etl.concepts import (
+    DEATH_CERTIFICATION,
+    TYPE_EHR,
     ConceptMatch,
     ETHNICITY_HISPANIC,
     GENDER_FEMALE,
@@ -14,6 +16,7 @@ from omoplab.etl.concepts import (
 )
 from omoplab.etl.transform import (
     to_conditions,
+    to_deaths,
     to_observation_periods,
     to_persons,
     to_visits,
@@ -64,12 +67,13 @@ def test_visit_class_maps_to_visit_concepts():
         _encounter("e2", "p-a", "2020-02-01T09:00:00Z", "2020-02-03T10:00:00Z", "Inpatient"),
         _encounter("e3", "p-a", "2020-03-01T09:00:00Z", "2020-03-01T11:00:00Z", "urgentcare"),
         _encounter("e4", "p-a", "2020-04-01T09:00:00Z", "2020-04-01T10:00:00Z", "hospice"),
+        _encounter("e5", "p-a", "2020-05-01T09:00:00Z", "2020-05-01T10:00:00Z", "spaceship"),
     ]
 
     visits, visit_map = to_visits(encounters, {"p-a": 1})
 
-    assert [v.visit_concept_id for v in visits] == [VISIT_OUTPATIENT, VISIT_INPATIENT, VISIT_EMERGENCY, 0]
-    assert visit_map == {"e1": 1, "e2": 2, "e3": 3, "e4": 4}
+    assert [v.visit_concept_id for v in visits] == [VISIT_OUTPATIENT, VISIT_INPATIENT, VISIT_EMERGENCY, 8546, 0]
+    assert visit_map == {"e1": 1, "e2": 2, "e3": 3, "e4": 4, "e5": 5}
     assert visits[1].visit_start_datetime == datetime(2020, 2, 1, 9, 0)
     assert visits[1].visit_end_date == date(2020, 2, 3)
     assert all(v.visit_type_concept_id == TYPE_EHR_ENCOUNTER for v in visits)
@@ -130,3 +134,24 @@ def test_conditions_route_by_target_domain():
     assert (obs.observation_concept_id, obs.observation_source_value, obs.visit_occurrence_id) == (4200001, "314529007", 7)
     assert obs.observation_type_concept_id == TYPE_EHR_ENCOUNTER
     assert split.skipped == 1
+
+
+def test_deaths_come_from_patients_with_cause_from_death_certification():
+    patients = [_patient("p-a"), {**_patient("p-b"), "DEATHDATE": "2021-03-04"}, {**_patient("p-c"), "DEATHDATE": "2022-01-01"}]
+    for p in patients:
+        p.setdefault("DEATHDATE", "")
+    _, person_ids = to_persons(patients)
+    encounters = [
+        {**_encounter("e9", "p-b", "2021-03-04T10:00:00Z", "2021-03-04T10:15:00Z", "ambulatory"),
+         "CODE": DEATH_CERTIFICATION, "REASONCODE": "254637007"},
+        {**_encounter("e8", "p-b", "2020-01-01T10:00:00Z", "", "wellness"), "CODE": "410620009", "REASONCODE": "x"},
+    ]
+    lookup = {("SNOMED-CT", "254637007"): ConceptMatch(4115276, 4115276, "Condition")}
+
+    deaths = to_deaths(patients, person_ids, encounters, lookup)
+
+    assert [(d.person_id, d.death_date) for d in deaths] == [(2, date(2021, 3, 4)), (3, date(2022, 1, 1))]
+    with_cause, without_cause = deaths
+    assert (with_cause.cause_concept_id, with_cause.cause_source_value) == (4115276, "254637007")
+    assert (without_cause.cause_concept_id, without_cause.cause_source_value) == (None, None)
+    assert all(d.death_type_concept_id == TYPE_EHR for d in deaths)

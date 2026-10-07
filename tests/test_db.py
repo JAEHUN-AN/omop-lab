@@ -143,10 +143,14 @@ def test_run_etl_routes_conditions_by_domain(conn, vocab_dir, tmp_path):
     counts = run_etl(conn, tmp_path, SCHEMA, **QUIET)
 
     assert counts == {"person": 1, "visit_occurrence": 1, "observation_period": 1,
-                      "condition_occurrence": 2, "observation": 1}
+                      "condition_occurrence": 2, "observation": 1, "death": 0}
     with conn.cursor() as cur:
         cur.execute(f"SELECT condition_source_value, condition_concept_id, visit_occurrence_id "
                     f"FROM {SCHEMA}.condition_occurrence ORDER BY condition_occurrence_id")
         assert cur.fetchall() == [("C01", 4092217, 1), ("000", 0, 1)]
         cur.execute(f"SELECT observation_concept_id, observation_source_value FROM {SCHEMA}.observation")
         assert cur.fetchall() == [(4200001, "314529007")]
+        cur.execute(f"SELECT cdm_version, vocabulary_version FROM {SCHEMA}.cdm_source")
+        ((cdm_version, vocabulary_version),) = cur.fetchall()
+        # 어휘 버전은 앞선 테스트가 넣은 VOCABULARY의 'None' 행에서 오거나, 없으면 'unknown'
+        assert cdm_version == "5.4" and vocabulary_version in ("unknown", "v5.0 29-AUG-26")
