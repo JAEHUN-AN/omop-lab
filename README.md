@@ -12,7 +12,7 @@ OMOP CDM 5.4를 손으로 익히고, 그 위에서 **한국 진단코드(KCD) �
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 0 | Synthea 합성 환자 → CDM 핵심 테이블 ETL (person, visit_occurrence, observation_period, condition_occurrence, observation) | ✅ 어휘 없이 적재 확인 |
-| 0.5 | Athena 어휘 적재 → 진단 매핑률 측정 (SNOMED, ICD-10 → 표준 개념) | ⏳ 어휘 다운로드 대기 |
+| 0.5 | Athena 어휘 적재 → 진단 매핑률 측정 (SNOMED, ICD-10 → 표준 개념) | ✅ 99.3% (아래 측정 기록) |
 | 0.9 | DataQualityDashboard로 품질 점검, 공식 ETL-Synthea(R) 결과와 비교 | |
 | 1 | KCD 코드 목록 → KCD7 → 표준 개념 매핑률 측정 도구 | |
 
@@ -51,6 +51,34 @@ uv run omoplab status           # 행 수, 진단 매핑률
 2. 기본 선택에 더해 **SNOMED, ICD10, ICD10CM, LOINC, RxNorm, KCD7, EDI** 를 고른다
    (CPT4는 UMLS 라이선스가 필요하니 빼도 된다)
 3. 메일로 온 zip을 `vocab/`에 풀고 `uv run omoplab load-vocab` → `uv run omoplab etl` 다시 실행
+
+## 측정 기록
+
+### 0.5 — Synthea 진단 매핑 (2026-10-07, Athena 다운로드 2026-10-07)
+
+| 항목 | 값 |
+|---|---|
+| 어휘 적재 | concept 651만, concept_relationship 3,996만, concept_ancestor 7,671만 행 (7분 24초) |
+| 진단 원천 42,704행 → condition_occurrence | 19,082 |
+| → observation (Observation 도메인) | 23,589 (55%) — 도메인 분리를 안 했다면 전부 진단으로 잘못 들어갔다 |
+| → 적재 안 함 (그 밖 도메인) | 33 |
+| 표준 개념 매핑률 | **99.3%** |
+
+미매핑 0.7%의 원인:
+- SNOMED `55680006`(Drug overdose), `6525002`(Dependent drug abuse) 등은 **폐기(invalid_reason=D)된 코드이고 대체 개념도 없다.** Synthea가 옛 SNOMED 코드를 쓴다.
+- ICD10CM `C77.0`, `C79.51`(이차성 악성 신생물)은 받은 묶음 안에 'Maps to'가 없다. 전이 코드는 Cancer Modifier 어휘로 가는 경우가 있어 그 어휘를 받지 않은 탓으로 보인다 (미확인).
+
+### KCD7 어휘 자체의 표준 개념 연결률
+
+| 항목 | 값 |
+|---|---|
+| KCD7 코드 | 22,508 |
+| 유효한 표준 개념으로 'Maps to'가 있는 코드 | 17,983 (**79.9%**) |
+| 대상 | SNOMED Condition 14,862 · SNOMED Observation 2,807 · Procedure 171 · Measurement 105 |
+
+미연결이 몰린 장: **S 손상 66%, U 특수목적 84%, W·X·Y 외인 33~50%**.
+U는 MERS(`U19`) 같은 한국 고유 코드와 한의 변증 코드라 국제 표준에 짝이 없다.
+→ 실제 병원 코드를 KCD7로 매핑할 때 **손상·외인·한국 고유 코드가 구조적 공백**이 된다. Athena에는 KCD7만 있으므로 KCD 8차 이후 신설 코드도 따로 따져야 한다.
 
 ## 설계 결정 (공식 ETL-Synthea와 다른 점)
 
