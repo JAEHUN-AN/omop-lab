@@ -12,6 +12,7 @@ CSV_DIR <- file.path(ROOT, "data", "synthea", "csv")
 VOCAB_TABLES <- c("concept", "vocabulary", "domain", "concept_class", "concept_relationship",
                   "relationship", "concept_synonym", "concept_ancestor", "drug_strength")
 
+if (CDM_SCHEMA %in% c(OFFICIAL, NATIVE)) stop("CDM_SCHEMA가 ", CDM_SCHEMA, "이면 이 스크립트가 그 스키마를 지웁니다. .env를 확인하세요")
 cd <- connection_details()
 run_sql <- function(sql) {
   conn <- DatabaseConnector::connect(cd)

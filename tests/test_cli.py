@@ -114,7 +114,12 @@ def test_compare_schema_with_itself_matches_fully(cli_schema, tmp_path, capsys):
     main(["compare", SCHEMA])
 
     out = capsys.readouterr().out
-    assert "condition_occurrence" in out and "100.0" in out
+    lines = out.splitlines()
+    overlap_section = lines[next(i for i, line in enumerate(lines) if line.startswith("대조")) + 1:]
+    overlap_rows = [line for line in overlap_section if line.startswith(("condition_occurrence ", "death ("))]
+    # 자기 자신과 비교하면 모든 대조가 양방향 100%여야 한다
+    assert len(overlap_rows) == 3
+    assert all(row.split()[-2:] == ["100.0", "100.0"] for row in overlap_rows)
 
 
 def test_load_settings_rejects_reserved_schema(monkeypatch):

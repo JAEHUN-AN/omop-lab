@@ -229,9 +229,21 @@ def to_conditions(
     return ConditionSplit(conditions, observations, skipped)
 
 
+def death_causes(encounters: Iterable[Mapping[str, str]]) -> dict[str, str]:
+    """환자별 사인 코드 — 가장 이른 사망진단 방문(308646001)의 REASONCODE."""
+    certifications = sorted(
+        (e for e in encounters if e.get("CODE") == DEATH_CERTIFICATION and e.get("REASONCODE")),
+        key=lambda e: e["START"],
+    )
+    causes: dict[str, str] = {}
+    for e in certifications:
+        causes.setdefault(e["PATIENT"], e["REASONCODE"])
+    return causes
+
+
 def death_cause_keys(encounters: Iterable[Mapping[str, str]]) -> set[tuple[str, str]]:
-    """사인 조회에 필요한 (SYSTEM, 코드) — 사망진단 방문의 REASONCODE."""
-    return {("SNOMED-CT", e["REASONCODE"]) for e in encounters if e.get("CODE") == DEATH_CERTIFICATION and e.get("REASONCODE")}
+    """사인 조회에 필요한 (SYSTEM, 코드)."""
+    return {("SNOMED-CT", code) for code in death_causes(encounters).values()}
 
 
 def to_deaths(
@@ -240,15 +252,13 @@ def to_deaths(
     encounters: Iterable[Mapping[str, str]],
     lookup: ConceptLookup,
 ) -> list[Death]:
-    """사망일은 patients.DEATHDATE, 사인은 사망진단 방문(308646001)의 REASONCODE에서 가져온다.
+    """사망일은 patients.DEATHDATE(실제 사망일), 사인은 가장 이른 사망진단 방문의 REASONCODE.
 
-    ETL-Synthea는 사인이 표준 개념으로 매핑된 사망진단 방문만 남긴다. 여기서는 사망자를 버리지 않고,
-    사인을 찾지 못하면 비워 둔다 (의도한 차이 — README 설계 결정 참고).
+    ETL-Synthea는 사망진단 방문 날짜를 사망일로 쓰고, 사인이 표준 개념으로 매핑된 사람만 남긴다.
+    여기서는 사망자를 버리지 않는다. 사망진단 방문이 없으면 사인은 NULL,
+    사인 코드가 Condition 표준 개념으로 이어지지 않으면(폐기 코드, Observation 도메인 등) 개념만 0으로 둔다.
     """
-    causes: dict[str, str] = {}
-    for e in encounters:
-        if e.get("CODE") == DEATH_CERTIFICATION and e.get("REASONCODE"):
-            causes.setdefault(e["PATIENT"], e["REASONCODE"])
+    causes = death_causes(encounters)
     deaths = []
     for p in sorted(patients, key=lambda p: person_ids.get(p["Id"], 0)):
         person_id = person_ids.get(p["Id"])
@@ -256,7 +266,6 @@ def to_deaths(
             continue
         code = causes.get(p["Id"])
         match = lookup.get(("SNOMED-CT", code), UNMAPPED) if code else UNMAPPED
-        # 사인 코드가 Condition 표준 개념이 아니면 원천 값만 남기고 개념은 0(미매핑)
         standard = match.standard_concept_id if match.domain_id == "Condition" else 0
         deaths.append(
             Death(

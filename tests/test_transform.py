@@ -16,6 +16,7 @@ from omoplab.etl.concepts import (
 )
 from omoplab.etl.transform import (
     to_conditions,
+    death_cause_keys,
     to_deaths,
     to_observation_periods,
     to_persons,
@@ -155,3 +156,24 @@ def test_deaths_come_from_patients_with_cause_from_death_certification():
     assert (with_cause.cause_concept_id, with_cause.cause_source_value) == (4115276, "254637007")
     assert (without_cause.cause_concept_id, without_cause.cause_source_value) == (None, None)
     assert all(d.death_type_concept_id == TYPE_EHR for d in deaths)
+
+
+def test_death_cause_uses_earliest_certification_and_zero_for_non_condition_cause():
+    patients = [{**_patient("p-a"), "DEATHDATE": "2021-03-04"}, {**_patient("p-b"), "DEATHDATE": "2021-05-01"}]
+    _, person_ids = to_persons(patients)
+    cert = {"CODE": DEATH_CERTIFICATION, "ENCOUNTERCLASS": "ambulatory", "STOP": ""}
+    encounters = [
+        {**cert, "Id": "e2", "PATIENT": "p-a", "START": "2021-03-10T00:00:00Z", "REASONCODE": "later"},
+        {**cert, "Id": "e1", "PATIENT": "p-a", "START": "2021-03-05T00:00:00Z", "REASONCODE": "254637007"},
+        {**cert, "Id": "e3", "PATIENT": "p-b", "START": "2021-05-02T00:00:00Z", "REASONCODE": "48333001"},
+    ]
+    lookup = {
+        ("SNOMED-CT", "254637007"): ConceptMatch(4115276, 4115276, "Condition"),
+        ("SNOMED-CT", "48333001"): ConceptMatch(4123254, 4123254, "Observation"),  # Burn injury
+    }
+
+    a, b = to_deaths(patients, person_ids, encounters, lookup)
+
+    assert (a.cause_source_value, a.cause_concept_id) == ("254637007", 4115276)
+    assert (b.cause_source_value, b.cause_concept_id, b.cause_source_concept_id) == ("48333001", 0, 4123254)
+    assert death_cause_keys(encounters) == {("SNOMED-CT", "254637007"), ("SNOMED-CT", "48333001")}

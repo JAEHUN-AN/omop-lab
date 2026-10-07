@@ -13,7 +13,11 @@ JDBC_DIR <- file.path(ROOT, "tools", "jdbc")
 read_env <- function(path = file.path(ROOT, ".env")) {
   lines <- readLines(path, encoding = "UTF-8", warn = FALSE)
   lines <- trimws(lines[grepl("^[A-Za-z_][A-Za-z0-9_]*=", lines)])
-  setNames(sub("^[^=]*=", "", lines), sub("=.*$", "", lines))
+  values <- trimws(sub("^[^=]*=", "", lines))
+  quoted <- grepl("^(\".*\"|'.*')$", values)
+  values[quoted] <- substr(values[quoted], 2, nchar(values[quoted]) - 1)  # python-dotenv처럼 따옴표를 벗긴다
+  values[!quoted] <- trimws(sub("\\s+#.*$", "", values[!quoted]))       # 따옴표 밖 인라인 주석 제거
+  setNames(values, sub("=.*$", "", lines))
 }
 
 env_or <- function(env, key, default) if (!is.na(env[key]) && nzchar(env[key])) unname(env[key]) else default
