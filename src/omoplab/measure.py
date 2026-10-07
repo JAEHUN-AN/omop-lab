@@ -26,6 +26,7 @@ from typing import NamedTuple
 
 from omoplab.ddl import validate_schema
 from omoplab.etl.concepts import SYSTEM_VOCABULARIES, UNMAPPED, ConceptLookup, lookup_concepts
+from omoplab.kcd import KcdVersions, to_kcd7
 
 SYSTEMS = ("KCD", "EDI")
 DEFAULT_GROUP = "(전체)"
@@ -50,8 +51,9 @@ class CodeResult(NamedTuple):
     weight: float | None  # count 열이 없으면 None
     valid_format: bool
     extended: bool  # 형식은 KCD가 아니지만 KCD + 원내 확장 자릿수로 읽히는 코드
-    match_level: str  # exact | parent | none
+    match_level: str  # exact | crosswalk | parent | none
     matched_code: str
+    current_only: bool  # KCD7로 바로·연계로 못 가지만 최신 KCD(9차)에는 있는 코드
     deprecated: bool  # 찾은 국내 코드가 폐기·대체된 코드인가
     source_concept_id: int
     standard_concept_id: int
@@ -65,8 +67,10 @@ class Summary(NamedTuple):
     invalid: int
     extended: int
     exact: int
+    crosswalk: int
     parent: int
     missing: int
+    current_only: int
     deprecated: int
     mapped_exact: int
     mapped_parent: int
@@ -97,20 +101,43 @@ def candidate_codes(system: str, code: str) -> list[str]:
     return candidates
 
 
-def classify(row: Mapping[str, str], system: str, lookup: ConceptLookup) -> CodeResult:
+def _find(system: str, candidates: Sequence[str], lookup: ConceptLookup):
+    for i, candidate in enumerate(candidates):
+        if (system, candidate) in lookup:
+            return i, candidate, lookup[(system, candidate)]
+    return None
+
+
+def classify(row: Mapping[str, str], system: str, lookup: ConceptLookup,
+             versions: KcdVersions | None = None) -> CodeResult:
+    """정확 일치 → (KCD) 개정 연계표로 KCD7 되돌리기 → (KCD) 상위 코드 → 미발견."""
     raw = row["code"]
     code = normalize(system, raw)
     valid = is_valid_format(system, code)
     extended = not valid and system == "KCD" and _KCD_EXTENDED.fullmatch(code) is not None
-    # 깨진 코드는 어디까지가 표준 코드인지 알 수 없으므로 상위 탐색을 하지 않는다
-    candidates = candidate_codes(system, code) if valid or extended else [code]
     level, matched, match = "none", "", UNMAPPED
-    for i, candidate in enumerate(candidates):
-        if (system, candidate) in lookup:
-            level, matched, match = ("exact" if i == 0 else "parent"), candidate, lookup[(system, candidate)]
-            break
+
+    exact = _find(system, [code], lookup)
+    # 연계표는 상위 탐색보다 먼저 본다 — 예: KCD-9 B34.20(MERS)은 상위 B34.2가 아니라 KCD7 MERS 코드로 가야 한다
+    crosswalk = None
+    if exact is None and versions is not None and system == "KCD" and valid:
+        crosswalk = _find(system, [c for c in to_kcd7(code, versions) if c != code], lookup)
+    # 깨진 코드는 어디까지가 표준 코드인지 알 수 없으므로 상위 탐색을 하지 않는다
+    parent = None
+    if exact is None and crosswalk is None and (valid or extended):
+        parent = _find(system, candidate_codes(system, code)[1:], lookup)
+
+    if exact is not None:
+        level, matched, match = "exact", exact[1], exact[2]
+    elif crosswalk is not None:
+        level, matched, match = "crosswalk", crosswalk[1], crosswalk[2]
+    elif parent is not None:
+        level, matched, match = "parent", parent[1], parent[2]
+
     count = row.get("count")
     weight = None if count is None else float(count or 0)  # count 열은 있는데 빈 칸이면 사용량 0
+    current_only = (versions is not None and system == "KCD" and level in ("parent", "none")
+                    and code in versions.current_codes)
     return CodeResult(
         group=row.get("group") or DEFAULT_GROUP,
         system=system,
@@ -122,6 +149,7 @@ def classify(row: Mapping[str, str], system: str, lookup: ConceptLookup) -> Code
         extended=extended,
         match_level=level,
         matched_code=matched,
+        current_only=current_only,
         deprecated=match.source_invalid is not None,
         source_concept_id=match.source_concept_id,
         standard_concept_id=match.standard_concept_id,
@@ -167,10 +195,12 @@ def summarize(results: Iterable[CodeResult]) -> list[Summary]:
                 invalid=sum(not r.valid_format and not r.extended for r in rows),
                 extended=sum(r.extended for r in rows),
                 exact=levels["exact"],
+                crosswalk=levels["crosswalk"],
                 parent=levels["parent"],
                 missing=levels["none"],
+                current_only=sum(r.current_only for r in rows),
                 deprecated=sum(r.deprecated for r in rows),
-                mapped_exact=sum(r.match_level == "exact" for r in mapped),
+                mapped_exact=sum(r.match_level in ("exact", "crosswalk") for r in mapped),
                 mapped_parent=sum(r.match_level == "parent" for r in mapped),
                 mapped_pct=_pct(len(mapped), len(rows)),
                 weighted_mapped_pct=_pct(mapped_weight, total_weight) if weighted and total_weight else None,
@@ -239,20 +269,22 @@ def vocabulary_status(conn, schema: str, systems: Iterable[str]) -> dict[str, st
     return versions
 
 
-def measure(conn, schema: str, rows: Sequence[Mapping[str, str]], default_system: str | None) -> list[CodeResult]:
+def measure(conn, schema: str, rows: Sequence[Mapping[str, str]], default_system: str | None,
+            versions: KcdVersions | None = None) -> list[CodeResult]:
     systems = []
     for row in rows:
         system = (row.get("system") or default_system or "").upper()
         if system not in SYSTEMS:
             raise ValueError(f"코드 {row['code']!r}의 체계를 알 수 없습니다. system 열이나 --system에 KCD/EDI를 주세요")
         systems.append(system)
-    keys = {
-        (system, candidate)
-        for row, system in zip(rows, systems)
-        for candidate in candidate_codes(system, normalize(system, row["code"]))
-    }
+    keys: set[tuple[str, str]] = set()
+    for row, system in zip(rows, systems):
+        code = normalize(system, row["code"])
+        keys.update((system, c) for c in candidate_codes(system, code))
+        if versions is not None and system == "KCD":
+            keys.update((system, c) for c in to_kcd7(code, versions))
     lookup = lookup_concepts(conn, schema, keys)
-    return [classify(row, system, lookup) for row, system in zip(rows, systems)]
+    return [classify(row, system, lookup, versions) for row, system in zip(rows, systems)]
 
 
 def _safe_cell(value):
@@ -279,12 +311,14 @@ def _cell(value, width: int, left: bool = False) -> str:
 
 
 _COLUMNS = (("group", 14, True), ("체계", 6, True), ("코드", 8, False), ("형식오류", 9, False), ("원내확장", 9, False),
-            ("어휘정확", 9, False), ("어휘상위", 9, False), ("미발견", 8, False), ("폐기", 7, False),
-            ("연결(정확)", 11, False), ("연결(상위)", 11, False), ("연결%", 8, False), ("가중%", 8, False))
+            ("어휘정확", 9, False), ("개정연계", 9, False), ("어휘상위", 9, False), ("미발견", 8, False),
+            ("최신KCD만", 10, False), ("폐기", 7, False),
+            ("연결(정확·연계)", 16, False), ("연결(상위)", 11, False), ("연결%", 8, False), ("가중%", 8, False))
 
 LEGEND = (
     "형식오류: 표준 코드 형식이 아니고 원내 확장으로도 읽히지 않는 코드 / 원내확장: KCD + 병원 고유 자릿수 (상위 코드로 찾음)\n"
-    "어휘정확/어휘상위/미발견: 국내 어휘(KCD7·EDI)에서 찾은 방식 (합 = 코드)\n"
+    "어휘정확/개정연계/어휘상위/미발견: 국내 어휘(KCD7·EDI)에서 찾은 방식 (합 = 코드). 개정연계 = KCD 9→8→7 연계표로 찾음\n"
+    "최신KCD만: KCD7로는 바로도 연계로도 못 가지만 최신 KCD(9차)에는 있는 코드 — 깨진 코드가 아니라 어휘 버전 공백\n"
     "폐기: 찾았지만 폐기·대체된 국내 코드 / 연결: 유효한 표준 개념까지 이어진 코드 (연결% = 연결 합 / 코드)\n"
     "가중%: count(사용량) 기준 연결 비율 — count 열이 없으면 '-'"
 )
@@ -298,7 +332,8 @@ def format_report(summaries: Sequence[Summary], results: Sequence[CodeResult], t
     lines.append("".join(_cell(name, w, left) for name, w, left in _COLUMNS) + "  도메인")
     for s in summaries:
         domains = ", ".join(f"{d} {n}" for d, n in sorted(s.domains.items(), key=lambda x: -x[1]))
-        values = (s.group, s.system, s.codes, s.invalid, s.extended, s.exact, s.parent, s.missing, s.deprecated,
+        values = (s.group, s.system, s.codes, s.invalid, s.extended, s.exact, s.crosswalk, s.parent, s.missing,
+                  s.current_only, s.deprecated,
                   s.mapped_exact, s.mapped_parent, s.mapped_pct, s.weighted_mapped_pct)
         lines.append("".join(_cell(v, w, left) for v, (_, w, left) in zip(values, _COLUMNS)) + f"  {domains}")
     lines.append("")

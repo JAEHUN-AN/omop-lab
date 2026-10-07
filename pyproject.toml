@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Synthea → OMOP CDM 5.4 학습용 ETL과 KCD 용어 매핑 측정"
 requires-python = ">=3.12"
 dependencies = [
+    "openpyxl>=3.1.5",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.0",
 ]

@@ -8,6 +8,7 @@ from omoplab.compare import event_overlap, format_comparison, table_counts
 from omoplab.config import ROOT, load_settings
 from omoplab.ddl import apply_ddl, schema_exists, validate_schema
 from omoplab.etl.load import run_etl
+from omoplab.kcd import load_kcd_versions
 from omoplab.measure import (
     SYSTEMS,
     format_report,
@@ -65,6 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--system", choices=SYSTEMS, help="CSV에 system 열이 없을 때 쓸 코드 체계")
     m.add_argument("--out", type=Path, help="코드별 판정 결과를 저장할 CSV 경로")
     m.add_argument("--top", type=int, default=20, help="표준 개념이 없는 코드를 사용량 순으로 몇 개 보여 줄지")
+    m.add_argument("--kcd-dir", type=Path, default=ROOT / "vocab" / "kcd",
+                   help="KCD 개정 연계표·Masterfile 폴더 (없으면 연계 없이 KCD7로만 잰다)")
     m.add_argument("--show-names", action="store_true", help="화면에 코드명도 찍는다 (기본은 코드만 — 로그에 원내 명칭이 남지 않게)")
     m.add_argument("--force", action="store_true", help="private/ 밖의 리포 경로도 허용한다")
     return parser
@@ -87,7 +90,10 @@ def _run_measure(conn, schema: str, args: argparse.Namespace) -> None:
         rows = read_code_list(args.csv_path)
         systems = {(r.get("system") or args.system or "").upper() for r in rows} & set(SYSTEMS)
         versions = vocabulary_status(conn, schema, sorted(systems))
-        results = measure(conn, schema, rows, args.system)
+        kcd = load_kcd_versions(args.kcd_dir) if "KCD" in systems and args.kcd_dir.is_dir() else None
+        if kcd is not None:
+            versions = {**versions, "KCD 개정 연계": " + ".join(kcd.sources)}
+        results = measure(conn, schema, rows, args.system, kcd)
     except (OSError, ValueError) as e:
         raise SystemExit(f"측정 실패: {e}") from e
     print(format_report(summarize(results), results, args.top, show_names=args.show_names, versions=versions))
