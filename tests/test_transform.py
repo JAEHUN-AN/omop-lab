@@ -6,7 +6,8 @@ from omoplab.etl.concepts import (
     GENDER_FEMALE,
     GENDER_MALE,
     RACE_WHITE,
-    TYPE_EHR,
+    TYPE_EHR_ENCOUNTER,
+    TYPE_PERIOD,
     VISIT_EMERGENCY,
     VISIT_INPATIENT,
     VISIT_OUTPATIENT,
@@ -27,6 +28,10 @@ def _encounter(eid, pid, start, stop, cls="ambulatory"):
     return {"Id": eid, "PATIENT": pid, "START": start, "STOP": stop, "ENCOUNTERCLASS": cls}
 
 
+def _condition(code, system="SNOMED-CT", encounter="e1", start="2020-01-01", stop=""):
+    return {"START": start, "STOP": stop, "PATIENT": "p-a", "ENCOUNTER": encounter, "SYSTEM": system, "CODE": code}
+
+
 def test_persons_get_sequential_ids_and_standard_concepts():
     persons, id_map = to_persons([_patient("p-b", gender="F", ethnicity="hispanic"), _patient("p-a")])
 
@@ -39,6 +44,13 @@ def test_persons_get_sequential_ids_and_standard_concepts():
     assert second.person_source_value == "p-b"
 
 
+def test_person_values_match_case_insensitively():
+    persons, _ = to_persons([_patient("p-1", gender="f", race="White", ethnicity="NonHispanic")])
+
+    assert (persons[0].gender_concept_id, persons[0].race_concept_id) == (GENDER_FEMALE, RACE_WHITE)
+    assert persons[0].ethnicity_concept_id != 0
+
+
 def test_unknown_race_maps_to_zero_but_keeps_source_value():
     persons, _ = to_persons([_patient("p-1", race="hawaiian")])
 
@@ -49,7 +61,7 @@ def test_unknown_race_maps_to_zero_but_keeps_source_value():
 def test_visit_class_maps_to_visit_concepts():
     encounters = [
         _encounter("e1", "p-a", "2020-01-01T09:00:00Z", "2020-01-01T09:30:00Z", "wellness"),
-        _encounter("e2", "p-a", "2020-02-01T09:00:00Z", "2020-02-03T10:00:00Z", "inpatient"),
+        _encounter("e2", "p-a", "2020-02-01T09:00:00Z", "2020-02-03T10:00:00Z", "Inpatient"),
         _encounter("e3", "p-a", "2020-03-01T09:00:00Z", "2020-03-01T11:00:00Z", "urgentcare"),
         _encounter("e4", "p-a", "2020-04-01T09:00:00Z", "2020-04-01T10:00:00Z", "hospice"),
     ]
@@ -60,7 +72,7 @@ def test_visit_class_maps_to_visit_concepts():
     assert visit_map == {"e1": 1, "e2": 2, "e3": 3, "e4": 4}
     assert visits[1].visit_start_datetime == datetime(2020, 2, 1, 9, 0)
     assert visits[1].visit_end_date == date(2020, 2, 3)
-    assert all(v.visit_type_concept_id == TYPE_EHR for v in visits)
+    assert all(v.visit_type_concept_id == TYPE_EHR_ENCOUNTER for v in visits)
 
 
 def test_visits_for_unknown_patients_are_dropped():
@@ -85,20 +97,36 @@ def test_observation_period_spans_first_to_last_visit():
         (1, date(2019, 1, 10), date(2021, 6, 1)),
         (2, date(2020, 1, 1), date(2020, 1, 1)),
     ]
+    assert all(p.period_type_concept_id == TYPE_PERIOD for p in periods)
 
 
 def test_conditions_use_lookup_and_link_visit():
-    rows = [
-        {"START": "2020-01-01", "STOP": "", "PATIENT": "p-a", "ENCOUNTER": "e1", "SYSTEM": "SNOMED-CT", "CODE": "44054006"},
-        {"START": "2020-02-01", "STOP": "2020-02-10", "PATIENT": "p-a", "ENCOUNTER": "e-missing", "SYSTEM": "ICD10", "CODE": "C01"},
-    ]
-    lookup = {("SNOMED-CT", "44054006"): ConceptMatch(source_concept_id=201826, standard_concept_id=201826)}
+    rows = [_condition("44054006"), _condition("C01", system="ICD10", encounter="e-missing", stop="2020-02-10")]
+    lookup = {("SNOMED-CT", "44054006"): ConceptMatch(201826, 201826, "Condition")}
 
-    conditions = to_conditions(rows, {"p-a": 1}, {"e1": 7}, lookup)
+    split = to_conditions(rows, {"p-a": 1}, {"e1": 7}, lookup)
 
-    mapped, unmapped = conditions
+    mapped, unmapped = split.conditions
     assert (mapped.condition_concept_id, mapped.condition_source_concept_id) == (201826, 201826)
     assert mapped.visit_occurrence_id == 7 and mapped.condition_end_date is None
+    # 매핑이 안 된 코드는 버리지 않고 0으로 남겨 매핑률 측정에 드러나게 한다
     assert (unmapped.condition_concept_id, unmapped.condition_source_value) == (0, "C01")
     assert unmapped.visit_occurrence_id is None
     assert unmapped.condition_end_date == date(2020, 2, 10)
+
+
+def test_conditions_route_by_target_domain():
+    rows = [_condition("314529007"), _condition("73211009"), _condition("444")]
+    lookup = {
+        ("SNOMED-CT", "314529007"): ConceptMatch(4200001, 4200001, "Observation"),
+        ("SNOMED-CT", "73211009"): ConceptMatch(201820, 201820, "Condition"),
+        ("SNOMED-CT", "444"): ConceptMatch(4300001, 4300001, "Procedure"),
+    }
+
+    split = to_conditions(rows, {"p-a": 1}, {"e1": 7}, lookup)
+
+    assert [c.condition_concept_id for c in split.conditions] == [201820]
+    (obs,) = split.observations
+    assert (obs.observation_concept_id, obs.observation_source_value, obs.visit_occurrence_id) == (4200001, "314529007", 7)
+    assert obs.observation_type_concept_id == TYPE_EHR_ENCOUNTER
+    assert split.skipped == 1

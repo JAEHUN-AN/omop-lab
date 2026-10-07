@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from omoplab.ddl import validate_schema
+from omoplab.ddl import ensure_indexes, validate_schema
 
 # 적재 순서: 작은 참조 테이블부터
 ATHENA_TABLES = (
@@ -16,6 +16,8 @@ ATHENA_TABLES = (
     "concept_ancestor",
     "drug_strength",
 )
+# 이 둘이 없으면 매핑 조회가 반쪽짜리가 되므로 적재를 시작하지 않는다
+REQUIRED_TABLES = ("concept", "concept_relationship")
 _CHUNK_BYTES = 1 << 20
 
 
@@ -35,18 +37,30 @@ def find_vocab_files(vocab_dir: Path) -> dict[str, Path]:
 
 
 def load_vocab(conn, vocab_dir: Path, schema: str, log=print) -> dict[str, int]:
+    """한 트랜잭션으로 전부 교체한다. 중간에 실패하면 이전 어휘가 그대로 남는다."""
+    schema = validate_schema(schema)
     files = find_vocab_files(vocab_dir)
-    if not files:
-        raise FileNotFoundError(f"{vocab_dir}에 Athena CSV(CONCEPT.csv 등)가 없습니다")
+    missing = [t for t in REQUIRED_TABLES if t not in files]
+    if missing:
+        raise FileNotFoundError(f"{vocab_dir}에 필수 Athena 파일이 없습니다: {', '.join(missing)}")
+    for table in ATHENA_TABLES:
+        if table not in files:
+            log(f"  - {table}: 파일 없음, 건너뜀")
 
     counts: dict[str, int] = {}
-    with conn.cursor() as cur:
-        for table, path in files.items():
-            cur.execute(f"TRUNCATE {validate_schema(schema)}.{table}")
-            with path.open("rb") as src, cur.copy(copy_sql(table, schema)) as copy:
-                while chunk := src.read(_CHUNK_BYTES):
-                    copy.write(chunk)
-            counts[table] = cur.rowcount
-            log(f"  {table}: {counts[table]:,}행")
-            conn.commit()
+    try:
+        with conn.cursor() as cur:
+            for table, path in files.items():
+                cur.execute(f"TRUNCATE {schema}.{table}")
+                with path.open("rb") as src, cur.copy(copy_sql(table, schema)) as copy:
+                    while chunk := src.read(_CHUNK_BYTES):
+                        copy.write(chunk)
+                counts[table] = cur.rowcount
+                log(f"  {table}: {counts[table]:,}행")
+        if ensure_indexes(conn, schema):
+            log("  PK·인덱스 생성 완료")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return counts
