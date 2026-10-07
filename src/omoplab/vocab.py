@@ -45,7 +45,7 @@ def read_vocabularies(vocab_dir: Path) -> dict[str, str]:
     with path.open(encoding="utf-8-sig") as f:
         next(f)  # 헤더
         rows = (line.rstrip("\r\n").split("\t") for line in f if line.strip())
-        return {cols[0]: cols[3] for cols in rows}
+        return {cols[0]: cols[3] for cols in rows if len(cols) >= 4}
 
 
 def plan_supplement(primary_dir: Path, extra_dir: Path) -> tuple[str, ...]:
@@ -56,6 +56,8 @@ def plan_supplement(primary_dir: Path, extra_dir: Path) -> tuple[str, ...]:
     """
     primary, extra = read_vocabularies(primary_dir), read_vocabularies(extra_dir)
     release, extra_release = primary.get(RELEASE_KEY), extra.get(RELEASE_KEY)
+    if release is None or extra_release is None:
+        raise ValueError(f"VOCABULARY.csv에 릴리스 행({RELEASE_KEY!r})이 없어 같은 릴리스인지 확인할 수 없습니다")
     if release != extra_release:
         raise ValueError(f"Athena 릴리스가 다릅니다: {release!r} vs {extra_release!r}. 같은 릴리스로 다시 받으세요.")
     return tuple(sorted(set(extra) - set(primary)))
@@ -100,9 +102,14 @@ def _supplement(cur, extra_dir: Path, schema: str, vocabulary_ids: tuple[str, ..
     if "concept_relationship" in files:
         cur.execute(
             f"INSERT INTO {schema}.concept_relationship SELECT r.* FROM _s_concept_relationship r "
-            "WHERE r.concept_id_1 IN (SELECT concept_id FROM _s_new) OR r.concept_id_2 IN (SELECT concept_id FROM _s_new)"
+            "WHERE (r.concept_id_1 IN (SELECT concept_id FROM _s_new) OR r.concept_id_2 IN (SELECT concept_id FROM _s_new)) "
+            # concept_relationship에는 PK가 없어서 중복을 DB가 막아 주지 않는다
+            f"AND NOT EXISTS (SELECT 1 FROM {schema}.concept_relationship t WHERE t.concept_id_1 = r.concept_id_1 "
+            "AND t.concept_id_2 = r.concept_id_2 AND t.relationship_id = r.relationship_id)"
         )
         log(f"  + 관계 {cur.rowcount:,}건 보충")
+    else:
+        log(f"  ! {extra_dir.name}에 CONCEPT_RELATIONSHIP.csv가 없어 보충한 개념은 표준 개념으로 연결되지 않습니다")
     if "concept_synonym" in files:
         cur.execute(
             f"INSERT INTO {schema}.concept_synonym SELECT s.* FROM _s_concept_synonym s JOIN _s_new n USING (concept_id)"

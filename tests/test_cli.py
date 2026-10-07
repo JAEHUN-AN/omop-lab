@@ -58,6 +58,7 @@ def test_measure_prints_summary_and_writes_per_code_csv(cli_schema, tmp_path, ca
             "(1572001,'E11.9','Condition','KCD7','KCD7 code',NULL,'E11.9','1970-01-01','2099-12-31',NULL),"
             "(1599000,'MERS','Condition','KCD7','KCD7 code',NULL,'U19','1970-01-01','2099-12-31',NULL)"
         )
+        conn.execute(f"INSERT INTO {SCHEMA}.vocabulary VALUES ('KCD7','KCD','','7th revision',0)")
         conn.execute(
             f"INSERT INTO {SCHEMA}.concept_relationship VALUES "
             "(1572001,201826,'Maps to','1970-01-01','2099-12-31',NULL)"
@@ -71,8 +72,25 @@ def test_measure_prints_summary_and_writes_per_code_csv(cli_schema, tmp_path, ca
 
     printed = capsys.readouterr().out
     assert "H1" in printed and "H2" in printed and "U19" in printed
+    assert "KCD7 7th revision" in printed
     lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert lines[0].startswith("group,system,raw_code") and len(lines) == 4
+
+
+def test_measure_fails_when_vocabulary_missing(cli_schema, tmp_path):
+    main(["init-db"])
+    codes = tmp_path / "codes.csv"
+    codes.write_text("code\nE119\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="KCD7"):
+        main(["measure", str(codes), "--system", "KCD"])
+
+
+def test_measure_refuses_paths_that_git_could_pick_up(cli_schema):
+    from omoplab.config import ROOT
+
+    with pytest.raises(SystemExit, match="private/"):
+        main(["measure", str(ROOT / "codes.csv"), "--system", "KCD"])
 
 
 def test_measure_reports_missing_file_without_traceback(cli_schema, tmp_path):

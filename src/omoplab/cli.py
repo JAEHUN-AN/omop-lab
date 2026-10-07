@@ -7,7 +7,15 @@ import psycopg
 from omoplab.config import ROOT, load_settings
 from omoplab.ddl import apply_ddl, schema_exists, validate_schema
 from omoplab.etl.load import run_etl
-from omoplab.measure import SYSTEMS, format_report, measure, read_code_list, summarize, write_results
+from omoplab.measure import (
+    SYSTEMS,
+    format_report,
+    measure,
+    read_code_list,
+    summarize,
+    vocabulary_status,
+    write_results,
+)
 from omoplab.vocab import load_vocab
 
 # 진단 원천(conditions.csv)은 도메인에 따라 condition_occurrence와 observation으로 나뉘어 들어간다.
@@ -54,35 +62,45 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--system", choices=SYSTEMS, help="CSV에 system 열이 없을 때 쓸 코드 체계")
     m.add_argument("--out", type=Path, help="코드별 판정 결과를 저장할 CSV 경로")
     m.add_argument("--top", type=int, default=20, help="표준 개념이 없는 코드를 사용량 순으로 몇 개 보여 줄지")
+    m.add_argument("--show-names", action="store_true", help="화면에 코드명도 찍는다 (기본은 코드만 — 로그에 원내 명칭이 남지 않게)")
+    m.add_argument("--force", action="store_true", help="private/ 밖의 리포 경로도 허용한다")
     return parser
 
 
-def _warn_if_committable(path: Path) -> None:
-    """리포 안이면서 private/ 밖이면 실수로 커밋될 수 있다."""
+def _check_location(path: Path, force: bool) -> None:
+    """리포 안이면서 private/ 밖이면 git에 올라갈 수 있어서 기본으로 거부한다."""
     resolved = path.resolve()
     if resolved.is_relative_to(ROOT) and not resolved.is_relative_to(ROOT / "private"):
-        print(f"  ! {path}는 git에 올라갈 수 있는 위치입니다. 실제 기관 데이터는 private/ 아래에 두세요.")
+        if not force:
+            raise SystemExit(f"{path}는 git에 올라갈 수 있는 위치입니다. 기관 데이터는 private/ 아래에 두세요 (그래도 쓰려면 --force).")
+        print(f"  ! {path}는 git에 올라갈 수 있는 위치입니다 (--force).")
 
 
 def _run_measure(conn, schema: str, args: argparse.Namespace) -> None:
     for path in (args.csv_path, args.out):
         if path is not None:
-            _warn_if_committable(path)
+            _check_location(path, args.force)
     try:
         rows = read_code_list(args.csv_path)
+        systems = {(r.get("system") or args.system or "").upper() for r in rows} & set(SYSTEMS)
+        versions = vocabulary_status(conn, schema, sorted(systems))
         results = measure(conn, schema, rows, args.system)
-    except (FileNotFoundError, ValueError) as e:
+    except (OSError, ValueError) as e:
         raise SystemExit(f"측정 실패: {e}") from e
-    print(format_report(summarize(results), results, args.top))
+    print(format_report(summarize(results), results, args.top, show_names=args.show_names, versions=versions))
     if args.out:
-        write_results(args.out, results)
+        try:
+            write_results(args.out, results)
+        except OSError as e:
+            raise SystemExit(f"결과 저장 실패 ({args.out}): {e}. 파일이 엑셀에 열려 있거나 폴더가 없는지 확인하세요.") from e
         print(f"\n코드별 결과 {len(results):,}행 → {args.out}")
 
 
 def main(argv: list[str] | None = None) -> None:
     # 파이프로 출력할 때 Windows 기본 인코딩(cp949)으로 한글이 깨지지 않게 한다
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     args = _build_parser().parse_args(argv)
 
     settings = load_settings()

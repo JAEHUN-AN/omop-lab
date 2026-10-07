@@ -31,3 +31,11 @@ def test_plan_supplement_refuses_different_releases(tmp_path):
 
     with pytest.raises(ValueError, match="릴리스"):
         plan_supplement(primary, extra)
+
+
+def test_plan_supplement_refuses_bundles_without_release_row(tmp_path):
+    primary = _bundle(tmp_path / "new", [("SNOMED", "s")])
+    extra = _bundle(tmp_path / "old", [("KCD7", "k")])
+
+    with pytest.raises(ValueError, match="릴리스 행"):
+        plan_supplement(primary, extra)

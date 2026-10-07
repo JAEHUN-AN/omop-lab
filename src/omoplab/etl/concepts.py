@@ -52,6 +52,7 @@ class ConceptMatch(NamedTuple):
     source_concept_id: int
     standard_concept_id: int
     domain_id: str | None  # 표준 개념의 도메인. 표준 개념이 없으면 None
+    source_invalid: str | None = None  # 원천 개념의 invalid_reason (D=폐기, U=대체됨)
 
 
 UNMAPPED = ConceptMatch(0, 0, None)
@@ -61,7 +62,7 @@ ConceptLookup = Mapping[tuple[str, str], ConceptMatch]
 # 'Maps to' 대상은 유효한 표준 개념(standard_concept='S')만 인정한다.
 # 일대다 매핑이면 concept_id가 가장 작은 것 하나만 쓴다 (ETL-Synthea는 모두 행으로 만든다 — 의도한 단순화).
 _LOOKUP_SQL = """
-SELECT c.concept_code, c.concept_id, t.concept_id, t.domain_id
+SELECT c.concept_code, c.concept_id, t.concept_id, t.domain_id, c.invalid_reason
 FROM {schema}.concept c
 LEFT JOIN {schema}.concept_relationship cr
   ON cr.concept_id_1 = c.concept_id
@@ -94,6 +95,6 @@ def lookup_concepts(conn, schema: str, keys: Iterable[tuple[str, str]]) -> dict[
                 if not pending:
                     break
                 cur.execute(sql, (vocabulary_id, pending))
-                for code, source_id, standard_id, domain_id in cur.fetchall():
-                    found.setdefault((system, code), ConceptMatch(source_id, standard_id or 0, domain_id))
+                for code, source_id, standard_id, domain_id, invalid in cur.fetchall():
+                    found.setdefault((system, code), ConceptMatch(source_id, standard_id or 0, domain_id, invalid))
     return found
