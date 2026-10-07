@@ -1,0 +1,104 @@
+from datetime import date, datetime
+
+from omoplab.etl.concepts import (
+    ConceptMatch,
+    ETHNICITY_HISPANIC,
+    GENDER_FEMALE,
+    GENDER_MALE,
+    RACE_WHITE,
+    TYPE_EHR,
+    VISIT_EMERGENCY,
+    VISIT_INPATIENT,
+    VISIT_OUTPATIENT,
+)
+from omoplab.etl.transform import (
+    to_conditions,
+    to_observation_periods,
+    to_persons,
+    to_visits,
+)
+
+
+def _patient(pid, gender="M", race="white", ethnicity="nonhispanic", birth="1980-05-17"):
+    return {"Id": pid, "BIRTHDATE": birth, "GENDER": gender, "RACE": race, "ETHNICITY": ethnicity}
+
+
+def _encounter(eid, pid, start, stop, cls="ambulatory"):
+    return {"Id": eid, "PATIENT": pid, "START": start, "STOP": stop, "ENCOUNTERCLASS": cls}
+
+
+def test_persons_get_sequential_ids_and_standard_concepts():
+    persons, id_map = to_persons([_patient("p-b", gender="F", ethnicity="hispanic"), _patient("p-a")])
+
+    assert id_map == {"p-a": 1, "p-b": 2}
+    first, second = persons
+    assert (first.person_id, first.gender_concept_id, first.race_concept_id) == (1, GENDER_MALE, RACE_WHITE)
+    assert first.year_of_birth == 1980 and first.month_of_birth == 5 and first.day_of_birth == 17
+    assert second.gender_concept_id == GENDER_FEMALE
+    assert second.ethnicity_concept_id == ETHNICITY_HISPANIC
+    assert second.person_source_value == "p-b"
+
+
+def test_unknown_race_maps_to_zero_but_keeps_source_value():
+    persons, _ = to_persons([_patient("p-1", race="hawaiian")])
+
+    assert persons[0].race_concept_id == 0
+    assert persons[0].race_source_value == "hawaiian"
+
+
+def test_visit_class_maps_to_visit_concepts():
+    encounters = [
+        _encounter("e1", "p-a", "2020-01-01T09:00:00Z", "2020-01-01T09:30:00Z", "wellness"),
+        _encounter("e2", "p-a", "2020-02-01T09:00:00Z", "2020-02-03T10:00:00Z", "inpatient"),
+        _encounter("e3", "p-a", "2020-03-01T09:00:00Z", "2020-03-01T11:00:00Z", "urgentcare"),
+        _encounter("e4", "p-a", "2020-04-01T09:00:00Z", "2020-04-01T10:00:00Z", "hospice"),
+    ]
+
+    visits, visit_map = to_visits(encounters, {"p-a": 1})
+
+    assert [v.visit_concept_id for v in visits] == [VISIT_OUTPATIENT, VISIT_INPATIENT, VISIT_EMERGENCY, 0]
+    assert visit_map == {"e1": 1, "e2": 2, "e3": 3, "e4": 4}
+    assert visits[1].visit_start_datetime == datetime(2020, 2, 1, 9, 0)
+    assert visits[1].visit_end_date == date(2020, 2, 3)
+    assert all(v.visit_type_concept_id == TYPE_EHR for v in visits)
+
+
+def test_visits_for_unknown_patients_are_dropped():
+    visits, visit_map = to_visits([_encounter("e1", "ghost", "2020-01-01T09:00:00Z", "2020-01-01T10:00:00Z")], {})
+
+    assert visits == [] and visit_map == {}
+
+
+def test_observation_period_spans_first_to_last_visit():
+    visits, _ = to_visits(
+        [
+            _encounter("e1", "p-a", "2021-06-01T09:00:00Z", "2021-06-01T10:00:00Z"),
+            _encounter("e2", "p-a", "2019-01-10T09:00:00Z", "2019-01-12T10:00:00Z"),
+            _encounter("e3", "p-b", "2020-01-01T09:00:00Z", "2020-01-01T10:00:00Z"),
+        ],
+        {"p-a": 1, "p-b": 2},
+    )
+
+    periods = to_observation_periods(visits)
+
+    assert [(p.person_id, p.observation_period_start_date, p.observation_period_end_date) for p in periods] == [
+        (1, date(2019, 1, 10), date(2021, 6, 1)),
+        (2, date(2020, 1, 1), date(2020, 1, 1)),
+    ]
+
+
+def test_conditions_use_lookup_and_link_visit():
+    rows = [
+        {"START": "2020-01-01", "STOP": "", "PATIENT": "p-a", "ENCOUNTER": "e1", "SYSTEM": "SNOMED-CT", "CODE": "44054006"},
+        {"START": "2020-02-01", "STOP": "2020-02-10", "PATIENT": "p-a", "ENCOUNTER": "e-missing", "SYSTEM": "ICD10", "CODE": "C01"},
+    ]
+    lookup = {("SNOMED-CT", "44054006"): ConceptMatch(source_concept_id=201826, standard_concept_id=201826)}
+
+    conditions = to_conditions(rows, {"p-a": 1}, {"e1": 7}, lookup)
+
+    mapped, unmapped = conditions
+    assert (mapped.condition_concept_id, mapped.condition_source_concept_id) == (201826, 201826)
+    assert mapped.visit_occurrence_id == 7 and mapped.condition_end_date is None
+    assert (unmapped.condition_concept_id, unmapped.condition_source_value) == (0, "C01")
+    assert unmapped.visit_occurrence_id is None
+    assert unmapped.condition_end_date == date(2020, 2, 10)

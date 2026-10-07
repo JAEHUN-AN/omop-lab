@@ -1,0 +1,18 @@
+# 생성·다운로드 데이터 (재현 가능하므로 커밋하지 않는다)
+data/
+vocab/
+tools/*.jar
+
+# 회사·고객 데이터 — 절대 커밋 금지
+private/
+
+# 비밀값
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
