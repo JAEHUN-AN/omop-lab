@@ -59,7 +59,7 @@ uv run omoplab status           # 행 수, 진단 매핑률
 | 항목 | 여기 | ETL-Synthea | 이유 |
 |---|---|---|---|
 | 방문 | encounter 1건 = 방문 1건 | 같은 날 ER·OP, 하루 이내 inpatient를 합친다 | 학습 단계에서는 원천과 1:1이 추적하기 쉽다 |
-| 진단의 도메인 | Condition → condition_occurrence, Observation → observation, 그 밖 도메인은 개수만 센다 | Condition 도메인만 condition_occurrence로 보낸다 | Synthea "진단"의 약 79%가 situation·finding(예: Medication review due)이다. 도메인을 무시하면 매핑률이 부풀려진다 |
+| 진단의 도메인 | Condition → condition_occurrence, Observation → observation, 그 밖 도메인은 개수만 센다 | Condition 도메인만 condition_occurrence로 보낸다 | Synthea "진단" 중 disorder는 20.6%뿐이고 finding 42.5%, situation 22.7%다(예: Medication review due). 도메인을 무시하면 진단 테이블이 오염된다 |
 | 미매핑 진단 | 0으로 condition_occurrence에 남긴다 | 버린다 | 매핑률 측정이 이 리포의 목적이다 |
 | 일대다 'Maps to' | concept_id가 가장 작은 표준 개념 하나 | 모두 행으로 만든다 | 결과가 결정적이게 하려고 |
 | ICD10 | ICD10CM에서만 찾는다 | 같다 | WHO ICD10으로 폴백하면 같은 문자열의 다른 개념에 붙을 수 있다 |
