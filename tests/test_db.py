@@ -95,6 +95,37 @@ def test_load_vocab_requires_core_files(conn, tmp_path):
         load_vocab(conn, tmp_path, SCHEMA, **QUIET)
 
 
+def test_load_vocab_supplements_missing_vocabulary_from_other_bundle(conn, vocab_dir, tmp_path):
+    extra = tmp_path / "old"
+    extra.mkdir()
+    (extra / "VOCABULARY.csv").write_text(
+        "vocabulary_id\tvocabulary_name\tvocabulary_reference\tvocabulary_version\tvocabulary_concept_id\n"
+        "None\tOMOP\t\tv5.0 29-AUG-26\t0\nKCD7\tKCD\t\t7th revision\t0\n", encoding="utf-8")
+    _write_tsv(extra / "CONCEPT.csv", CONCEPT_HEADER, [
+        _concept("201826", "Type 2 diabetes mellitus", "Condition", "SNOMED", "S", "44054006"),  # 이미 있음 → 중복 금지
+        _concept("1572001", "Type 2 diabetes mellitus without complications", "Condition", "KCD7", "", "E11.9"),
+    ])
+    _write_tsv(extra / "CONCEPT_RELATIONSHIP.csv", REL_HEADER, [
+        _maps_to("201826", "201826"),
+        _maps_to("1572001", "201826"),
+    ])
+    (vocab_dir / "VOCABULARY.csv").write_text(
+        "vocabulary_id\tvocabulary_name\tvocabulary_reference\tvocabulary_version\tvocabulary_concept_id\n"
+        "None\tOMOP\t\tv5.0 29-AUG-26\t0\nSNOMED\tSNOMED\t\ts\t0\n", encoding="utf-8")
+
+    counts = load_vocab(conn, vocab_dir, SCHEMA, extra_dirs=[extra], **QUIET)
+
+    assert counts["supplement:KCD7"] == 1
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*) FROM {SCHEMA}.concept WHERE concept_id = 201826")
+        assert cur.fetchone()[0] == 1
+        cur.execute(f"SELECT count(*) FROM {SCHEMA}.concept_relationship")
+        assert cur.fetchone()[0] == 5  # 기본 4 + KCD7→SNOMED 1
+        cur.execute(f"SELECT vocabulary_id FROM {SCHEMA}.vocabulary ORDER BY 1")
+        assert [r[0] for r in cur.fetchall()] == ["KCD7", "None", "SNOMED"]
+    (vocab_dir / "VOCABULARY.csv").unlink()
+
+
 def test_run_etl_routes_conditions_by_domain(conn, vocab_dir, tmp_path):
     load_vocab(conn, vocab_dir, SCHEMA, **QUIET)  # 두 번째 적재도 인덱스 중복 없이 성공해야 한다
     (tmp_path / "patients.csv").write_text(

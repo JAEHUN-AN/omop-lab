@@ -41,6 +41,10 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true", help="이미 있는 스키마를 어휘까지 통째로 지우고 다시 만든다")
     vocab = sub.add_parser("load-vocab", help="Athena 어휘 CSV를 적재하고 PK·인덱스를 만든다")
     vocab.add_argument("vocab_dir", type=Path, nargs="?", default=ROOT / "vocab")
+    vocab.add_argument(
+        "--add", type=Path, action="append", default=[], metavar="DIR",
+        help="같은 릴리스로 따로 받은 묶음. 기본 묶음에 없는 어휘만 덧붙인다 (여러 번 지정 가능)",
+    )
     etl = sub.add_parser("etl", help="Synthea CSV를 CDM 임상 테이블로 변환·적재한다")
     etl.add_argument("csv_dir", type=Path, nargs="?", default=ROOT / "data" / "synthea" / "csv")
     sub.add_parser("status", help="테이블 행 수와 진단 매핑률을 보여 준다")
@@ -62,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
             apply_ddl(conn, schema)
             print(f"스키마 {schema} 생성 완료 (CDM 5.4)")
         elif args.command == "load-vocab":
-            load_vocab(conn, args.vocab_dir, schema)
+            load_vocab(conn, args.vocab_dir, schema, extra_dirs=args.add)
         elif args.command == "etl":
             run_etl(conn, args.csv_dir, schema)
         elif args.command == "status":
